@@ -275,7 +275,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
         <input class="inp" id="q" type="search" placeholder="e.g. Danone Activia, Milka, банани" autocomplete="off" aria-label="Search foods">
         <button class="btn ghost" type="submit">Search</button>
       </form>
-      <div id="search-out"><p class="muted">Searches Open Food Facts, a free food database. Packaged products have the best coverage.</p></div>
+      <div id="search-local"></div>
+      <div id="search-out"><p class="muted">Start typing. Your own foods show up instantly, and products from Open Food Facts (a free food database) follow a moment later.</p></div>
     </section>
 
     <section id="pane-saved" class="form" hidden>
@@ -583,6 +584,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#product').hidden = true;
     if (tab !== 'scan') Scanner.stop(), scanUI(false);
     if (tab === 'saved') renderSaved();
+    if (tab === 'search') { renderLocalMatches($('#q').value); if (!S.editId) $('#q').focus(); }
     if (tab === 'scan') { getDetector().catch(() => {}); applyScanPref(); }
     if (tab === 'scan' && Scanner.everStarted && autostart && pref.get('cl-scan-method', 'live') !== 'photo') startScan();
   }
@@ -819,21 +821,70 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   }
 
   // ---------- Search UI ----------
-  async function runSearch(q) {
+  // Search as you type: your own foods match instantly; Open Food Facts is asked once you pause typing
+  // (it allows only about 10 searches a minute), and answers are remembered for the session.
+  const searchCache = new Map();
+  let searchTimer = null, searchSeq = 0;
+  const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+
+  function renderLocalMatches(q) {
+    const box = $('#search-local');
+    const words = norm(q).split(/\s+/).filter(Boolean);
+    if (!words.length) { box.innerHTML = ''; S.localHits = []; return; }
+    const seen = new Set(), hits = [];
+    for (const e of [...S.profile.favorites, ...recentFoods()]) {
+      const n = norm(e.name + ' ' + (e.brand || ''));
+      if (words.every(w => n.includes(w)) && !seen.has(favKey(e.name))) { seen.add(favKey(e.name)); hits.push(e); }
+      if (hits.length >= 5) break;
+    }
+    S.localHits = hits;
+    box.innerHTML = hits.length ? `<h3 class="sec-h">Your foods</h3><ul class="saved">${hits.map((e, i) => `<li style="grid-template-columns:1fr">
+      <button class="pick" data-act="pick" data-src="local" data-i="${i}"><span><span class="en">${esc(e.name)}</span><span class="em num">${e.per100 ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span><span class="ek num">${fmt(num(e.kcal))}</span></button></li>`).join('')}</ul>` : '';
+  }
+
+  function renderResults(q, res, loading) {
     const out = $('#search-out');
-    out.innerHTML = `<div class="loading"><div class="spin"></div>Searching…</div>`;
-    try {
-      const res = await searchFoods(q);
-      S.results = res;
-      out.innerHTML = res.length ? `<ul class="results">${res.map((p, i) => `<li><button data-act="result" data-i="${i}">
+    const head = `<h3 class="sec-h" style="display:flex;align-items:center;gap:8px">Open Food Facts${loading ? '<span class="spin" style="width:14px;height:14px;border-width:2px"></span>' : ''}</h3>`;
+    if (!res) { out.innerHTML = head + `<p class="muted">Searching for “${esc(q)}”…</p>`; return; }
+    S.results = res;
+    out.innerHTML = head + (res.length ? `<ul class="results">${res.map((p, i) => `<li><button data-act="result" data-i="${i}">
         <span style="min-width:0"><span class="en">${esc(p.name)}</span><span class="em">${esc([p.brand, p.servingLabel || ''].filter(Boolean).join(' · '))}</span></span>
         <span class="ek num">${fmt(p.per100.kcal)}<span class="em" style="display:inline"> /100 ${unitLabel(p.unit)}</span></span></button></li>`).join('')}</ul>`
-        : `<p class="muted">No products with nutrition data for “${esc(q)}”. Try the brand name, or use Manual.</p>`;
+      : `<p class="muted">No products with nutrition data for “${esc(q)}”. Try the brand name, or use Manual.</p>`);
+  }
+
+  async function runSearch(q, force) {
+    clearTimeout(searchTimer);
+    const key = norm(q);
+    if (!key || (key.length < 3 && !force)) return;
+    if (searchCache.has(key)) { renderResults(q, searchCache.get(key)); return; }
+    const seq = ++searchSeq;
+    // Keep the previous results on screen while the new ones load.
+    if (S.results && $('#search-out .results')) renderResults(q, S.results, true); else renderResults(q, null, true);
+    try {
+      const res = await searchFoods(q);
+      searchCache.set(key, res);
+      if (seq === searchSeq) renderResults(q, res);
     } catch (e) {
-      if (e.name === 'AbortError') return;
+      if (e.name === 'AbortError' || seq !== searchSeq) return;
       console.error('Search failed', e);
-      out.innerHTML = `<p class="err">${navigator.onLine ? 'Search didn’t respond. Open Food Facts limits how often it can be searched; wait a few seconds and try again.' : 'You’re offline. Search needs internet.'}</p>`;
+      $('#search-out').innerHTML = `<p class="err">${navigator.onLine ? 'Open Food Facts didn’t answer. It limits how often it can be searched; wait a few seconds and press Search.' : 'You’re offline. Only your own foods can be searched.'}</p>`;
     }
+  }
+
+  function onSearchInput() {
+    const q = $('#q').value;
+    renderLocalMatches(q);
+    clearTimeout(searchTimer);
+    const key = norm(q);
+    if (key.length < 3) {
+      if (searchCtl) searchCtl.abort();
+      searchSeq++;
+      $('#search-out').innerHTML = key ? '<p class="muted">Keep typing to search Open Food Facts…</p>' : '';
+      return;
+    }
+    if (searchCache.has(key)) { renderResults(q, searchCache.get(key)); return; }
+    searchTimer = setTimeout(() => runSearch(q), 600);
   }
 
   // ---------- Scanner ----------
@@ -1111,7 +1162,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       toast(isFav(p.name) ? 'Saved to favourites' : 'Removed from favourites');
     }
     else if (a === 'pick') {
-      const src = t.dataset.src === 'fav' ? S.profile.favorites : S.savedRec;
+      const src = t.dataset.src === 'fav' ? S.profile.favorites : t.dataset.src === 'local' ? (S.localHits || []) : S.savedRec;
       const e = src[+t.dataset.i]; if (!e) return;
       if (e.per100) { showProduct({name: e.name, brand: e.brand || '', per100: e.per100, unit: e.u || 'g', serving: 0, pack: 0, code: e.code || ''}, e.g); return; }
       addEntries([e]); closeSheet();
@@ -1137,6 +1188,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     if (ev.target.id === 'grams') updateTotals();
     if (ev.target.closest('#goals-form')) updateCheck();
     if (ev.target.id === 'saved-q') renderSaved();
+    if (ev.target.id === 'q') onSearchInput();
   });
   document.addEventListener('change', ev => {
     if (ev.target.id === 'import-file' && ev.target.files && ev.target.files[0]) importFile(ev.target.files[0]);
@@ -1146,7 +1198,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     ev.preventDefault();
     const id = ev.target.id;
     if (id === 'code-form') { const c = $('#code').value.trim(); if (c) handleCode(c); }
-    else if (id === 'search-form') { const q = $('#q').value.trim(); if (q.length >= 2) { $('#q').blur(); runSearch(q); } }
+    else if (id === 'search-form') { const q = $('#q').value.trim(); if (q.length >= 2) { $('#q').blur(); runSearch(q, true); } }
     else if (id === 'pane-manual') {
       const item = {name: $('#m-name').value.trim(), kcal: $('#m-kcal').value, p: $('#m-p').value, c: $('#m-c').value, f: $('#m-f').value};
       if (!item.name) return;
