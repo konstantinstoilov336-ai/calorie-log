@@ -1,6 +1,6 @@
 // Calorie Log service worker: makes the app open offline.
 // Bump VERSION whenever you upload changed files so phones pick up the update.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const SHELL_FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
@@ -21,6 +21,17 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+
+  // Product photos: keep a copy so your log shows them offline too.
+  if (url.hostname === 'images.openfoodfacts.org') {
+    e.respondWith(
+      caches.open('photos-v1').then(c => c.match(req).then(hit => hit || fetch(req).then(res => {
+        if (res.ok || res.type === 'opaque') c.put(req, res.clone());
+        return res;
+      })))
+    );
+    return;
+  }
 
   // Food database lookups always go to the network.
   if (url.hostname.endsWith('openfoodfacts.org')) return;
