@@ -354,6 +354,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       goal: {kcal: num(g.kcal) || DEFAULT_GOAL.kcal, p: num(g.p) || DEFAULT_GOAL.p, c: num(g.c) || DEFAULT_GOAL.c, f: num(g.f) || DEFAULT_GOAL.f},
       favorites: Array.isArray(p && p.favorites) ? p.favorites.filter(x => x && x.name) : [],
       units: (p && p.units && typeof p.units === 'object') ? p.units : {},  // barcode -> 'g' | 'ml', set with the g/ml switch
+      names: (p && p.names && typeof p.names === 'object') ? p.names : {},  // barcode -> your own product name, set with the pencil
     };
   }
   function normDays(d) {
@@ -398,6 +399,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
     star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/></svg>',
   };
 
@@ -697,7 +699,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     const has = kcal != null && isFinite(+kcal);
     return {
       code: p.code || code || '',
-      name: (p.product_name || p.product_name_bg || p.product_name_en || p.generic_name || '').trim() || 'Unnamed product',
+      name: (S.profile.names || {})[p.code || code] || (p.product_name || p.product_name_bg || p.product_name_en || p.generic_name || '').trim() || 'Unnamed product',
       brand: String(p.brands || '').split(',')[0].trim(),
       per100: has ? {kcal: r1(kcal), p: r1(n.proteins_100g), c: r1(n.carbohydrates_100g), f: r1(n.fat_100g)} : null,
       unit: unitOf(p, p.code || code),
@@ -769,18 +771,30 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     ['scan', 'search', 'saved', 'manual'].forEach(t => $('#pane-' + t).hidden = true);
     const presets = [];
     const u = unitLabel(p.unit), drink = u === 'ml';
-    if (p.serving && p.serving !== p.pack) presets.push({g: p.serving, label: `1 serving · ${r0(p.serving)} ${u}`});
-    if (drink) [200, 250].forEach(v => { if (v !== p.serving && v !== p.pack) presets.push({g: v, label: `Glass · ${v} ml`}); });
-    presets.push({g: 100, label: `100 ${u}`});
+    // Drinks: only the whole bottle as a shortcut; any other amount is typed in.
+    if (!drink) {
+      if (p.serving && p.serving !== p.pack) presets.push({g: p.serving, label: `1 serving · ${r0(p.serving)} ${u}`});
+      presets.push({g: 100, label: `100 ${u}`});
+    }
     if (p.pack && p.pack !== 100 && p.pack <= 3000) presets.push({g: p.pack, label: `${drink ? 'Whole bottle' : 'Whole pack'} · ${r0(p.pack)} ${u}`});
-    const g0 = grams || p.serving || 100;
+    const g0 = grams || (drink ? (p.pack <= 3000 && p.pack) || p.serving : p.serving) || 100;
     const fav = isFav(p.name);
     const el = $('#product');
     el.hidden = false;
     el.innerHTML = `<div class="product">
       <div class="sheet-h" style="align-items:flex-start">
-        <div style="min-width:0"><h3>${esc(p.name)}</h3>${p.brand ? `<p class="muted">${esc(p.brand)}</p>` : ''}</div>
-        <button class="star" data-act="fav-product" aria-pressed="${fav}" aria-label="${fav ? 'Remove from' : 'Add to'} favourites">${ICON.star}</button>
+        <div style="min-width:0;flex:1">
+          <h3 id="pname-show">${esc(p.name)}</h3>
+          <form class="code-row" id="name-form" hidden>
+            <input class="inp" id="pname" value="${p.name === 'Unnamed product' ? '' : esc(p.name)}" placeholder="Product name" autocomplete="off" aria-label="Product name" maxlength="140">
+            <button class="btn" type="submit">Save</button>
+          </form>
+          ${p.brand ? `<p class="muted">${esc(p.brand)}</p>` : ''}
+        </div>
+        <div style="display:flex">
+          <button class="star" data-act="edit-name" aria-label="Rename product">${ICON.pencil}</button>
+          <button class="star" data-act="fav-product" aria-pressed="${fav}" aria-label="${fav ? 'Remove from' : 'Add to'} favourites">${ICON.star}</button>
+        </div>
       </div>
       <div><p class="sec-h" style="margin-bottom:6px">Per 100 ${u}</p>
       <div class="per100 num">
@@ -1127,6 +1141,11 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (a === 'to-manual') { const n = t.dataset.name; showTab('manual'); if (n) $('#m-name').value = n; $('#m-kcal').focus(); }
     else if (a === 'result') { const p = S.results && S.results[+t.dataset.i]; if (p) showProduct(p); }
     else if (a === 'preset') { $('#grams').value = r1(t.dataset.g); updateTotals(); }
+    else if (a === 'edit-name') {
+      const f = $('#name-form'); if (!f) return;
+      f.hidden = !f.hidden; $('#pname-show').hidden = !f.hidden;
+      if (!f.hidden) { const i = $('#pname'); i.focus(); i.select(); }
+    }
     else if (a === 'unit') {
       const p = S.product; if (!p || p.unit === t.dataset.u) return;
       const amount = num($('#grams').value);
@@ -1197,6 +1216,23 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   document.addEventListener('submit', ev => {
     ev.preventDefault();
     const id = ev.target.id;
+    if (id === 'name-form') {
+      const p = S.product, name = $('#pname').value.trim().slice(0, 140);
+      if (!p || !name) { $('#pname').focus(); return; }
+      const old = p.name, amount = num($('#grams').value);
+      p.name = name;
+      // Remember the name for this barcode and rename it wherever it was already logged or saved.
+      const same = e => e.per100 && ((p.code && e.code === p.code) || (!p.code && favKey(e.name) === favKey(old)));
+      const fix = e => same(e) ? {...e, name} : e;
+      const days = {};
+      for (const [d, list] of Object.entries(S.days)) days[d] = list.map(fix);
+      S.days = days;
+      setProfile({...S.profile, favorites: S.profile.favorites.map(fix), names: p.code ? {...S.profile.names, [p.code]: name} : S.profile.names});
+      render();
+      showProduct(p, amount);
+      toast('Name saved');
+      return;
+    }
     if (id === 'code-form') { const c = $('#code').value.trim(); if (c) handleCode(c); }
     else if (id === 'search-form') { const q = $('#q').value.trim(); if (q.length >= 2) { $('#q').blur(); runSearch(q, true); } }
     else if (id === 'pane-manual') {
