@@ -169,6 +169,9 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
 .scanbox .scan-msg{position:absolute;left:0;right:0;bottom:10px;text-align:center;color:#fff;font-size:13px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.6)}
 .scan-off{display:grid;place-items:center;text-align:center;gap:10px;padding:24px;border:1.5px dashed var(--line);border-radius:16px}
 .code-row{display:grid;grid-template-columns:1fr auto;gap:8px}
+.photo-scan{display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;position:relative}
+.photo-scan svg{width:20px;height:20px}
+.photo-scan input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 
 /* Product */
 .product{border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:12px}
@@ -245,12 +248,17 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       <div class="scanbox" id="scanbox" hidden>
         <video id="video" playsinline muted autoplay></video>
         <div class="aim"></div>
-        <div class="scan-msg">Line the barcode up with the red line</div>
+        <div class="scan-msg">Hold 15–20 cm away · barcode across the red line</div>
       </div>
       <div class="scan-off" id="scan-off">
         <p class="muted" id="scan-off-msg">Point the camera at the barcode on the package.</p>
         <button class="btn" data-act="scan-start">Start camera</button>
       </div>
+      <label class="btn ghost photo-scan" for="barcode-photo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        Take a photo of the barcode
+        <input type="file" id="barcode-photo" accept="image/*" capture="environment">
+      </label>
       <form class="code-row" id="code-form">
         <input class="inp num" id="code" inputmode="numeric" pattern="[0-9]*" placeholder="Or type the barcode number" autocomplete="off" aria-label="Barcode number">
         <button class="btn ghost" type="submit">Look up</button>
@@ -310,7 +318,9 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   const KEY = 'calorie-log-v1';
   const OFF = 'https://world.openfoodfacts.org';
   const FIELDS = 'code,product_name,product_name_bg,product_name_en,generic_name,brands,quantity,serving_size,serving_quantity,nutriments';
-  const ZXING_URL = 'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';
+  // zxing-cpp compiled to WebAssembly, wrapped as a BarcodeDetector (iPhone Safari has no built-in one)
+  const DETECTOR_URL = 'https://cdn.jsdelivr.net/npm/barcode-detector@2.2.8/dist/es/pure.min.js';
+  const FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
 
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -556,7 +566,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   function renderMealPick() {
     $('#meal-pick').innerHTML = MEALS.map(m => `<button class="chip" role="radio" data-act="meal" data-meal="${m.id}" aria-checked="${S.meal === m.id}">${m.name}</button>`).join('');
   }
-  function showTab(tab) {
+  function showTab(tab, autostart = true) {
     S.tab = tab; S.product = null;
     if (!S.editId) pref.set('cl-tab', tab);
     ['scan', 'search', 'saved', 'manual'].forEach(t => {
@@ -566,7 +576,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#product').hidden = true;
     if (tab !== 'scan') Scanner.stop(), scanUI(false);
     if (tab === 'saved') renderSaved();
-    if (tab === 'scan' && Scanner.everStarted) startScan();
+    if (tab === 'scan') getDetector().catch(() => {});
+    if (tab === 'scan' && Scanner.everStarted && autostart) startScan();
   }
   function openSheet({meal, edit} = {}) {
     S.editId = edit ? edit.id : null;
@@ -793,56 +804,110 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   }
 
   // ---------- Scanner ----------
+  // One detector for live video and photos: the browser's own where it reads EAN codes, else zxing-cpp (WebAssembly).
+  let detectorP = null;
+  function getDetector() {
+    return detectorP || (detectorP = (async () => {
+      try {
+        if ('BarcodeDetector' in window) {
+          const fmts = await window.BarcodeDetector.getSupportedFormats();
+          if (fmts.includes('ean_13')) return new window.BarcodeDetector({formats: FORMATS.filter(f => fmts.includes(f))});
+        }
+      } catch {}
+      try {
+        const mod = await import(DETECTOR_URL);
+        return new mod.BarcodeDetector({formats: FORMATS});
+      } catch { detectorP = null; throw {name: 'NoLib'}; }
+    })());
+  }
+  const validCode = v => /^\d{8}$|^\d{12,13}$/.test(String(v || ''));
+  async function detectIn(det, img) {
+    try { const r = await det.detect(img); const hit = r.find(x => validCode(x.rawValue)); return hit ? hit.rawValue : null; }
+    catch { return null; }
+  }
+
   const Scanner = {
-    stream: null, reader: null, timer: null, active: false, everStarted: false,
+    stream: null, timer: null, active: false, everStarted: false, canvas: null,
     async start(video, onCode, onError) {
       this.stop(); this.active = true; this.everStarted = true;
       const done = code => { if (!this.active) return; this.active = false; onCode(code); };
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { onError({name: 'NoCamera'}); return; }
-      // Native detector where available (Chrome/Android); iPhone Safari uses ZXing.
-      if ('BarcodeDetector' in window) {
-        try {
-          const fmts = await BarcodeDetector.getSupportedFormats();
-          if (fmts.includes('ean_13')) {
-            const det = new BarcodeDetector({formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'].filter(f => fmts.includes(f))});
-            this.stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}, audio: false});
-            if (!this.active) return this.stop();
-            video.srcObject = this.stream; await video.play();
-            const tick = async () => {
-              if (!this.active) return;
-              try { const r = await det.detect(video); if (r.length) return done(r[0].rawValue); } catch {}
-              this.timer = setTimeout(tick, 150);
-            };
-            tick(); return;
-          }
-        } catch (e) { if (e && e.name === 'NotAllowedError') { this.stop(); onError(e); return; } }
-      }
+      let det;
       try {
-        await loadZXing();
+        const [d, stream] = await Promise.all([getDetector(), navigator.mediaDevices.getUserMedia({audio: false, video: {
+          facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080},
+          advanced: [{focusMode: 'continuous'}],
+        }})]);
+        det = d; this.stream = stream;
+        if (!this.active) return this.stop();
+        video.srcObject = stream;
+        video.setAttribute('playsinline', ''); video.muted = true;
+        await video.play();
+      } catch (e) { this.stop(); onError(e); return; }
+
+      // Scan the area under the aim box at the camera's full resolution, alternating with the whole frame.
+      this.canvas = this.canvas || document.createElement('canvas');
+      let n = 0;
+      const tick = async () => {
         if (!this.active) return;
-        const hints = new Map();
-        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E]);
-        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-        this.reader = new ZXing.BrowserMultiFormatReader(hints, 150);
-        await this.reader.decodeFromConstraints({audio: false, video: {facingMode: {ideal: 'environment'}, width: {ideal: 1280}, height: {ideal: 720}}}, video,
-          res => { if (res) done(res.getText()); });
-      } catch (e) { this.stop(); onError(e); }
+        const vw = video.videoWidth, vh = video.videoHeight;
+        if (vw && vh) {
+          let code = null;
+          if (n++ % 3 !== 2) {
+            const cw = Math.round(vw * 0.8), ch = Math.round(vh * 0.45);
+            const c = this.canvas; c.width = cw; c.height = ch;
+            c.getContext('2d', {willReadFrequently: true}).drawImage(video, (vw - cw) / 2, (vh - ch) / 2, cw, ch, 0, 0, cw, ch);
+            code = await detectIn(det, c);
+          } else {
+            code = await detectIn(det, video);
+          }
+          if (code) return done(code);
+        }
+        this.timer = setTimeout(tick, 120);
+      };
+      tick();
     },
     stop() {
       this.active = false; clearTimeout(this.timer);
-      if (this.reader) { try { this.reader.reset(); } catch {} this.reader = null; }
       if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
       const v = $('#video'); if (v) { try { v.pause(); } catch {} v.srcObject = null; }
     },
   };
-  let zxingP = null;
-  function loadZXing() {
-    if (window.ZXing) return Promise.resolve();
-    return zxingP || (zxingP = new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = ZXING_URL; s.onload = () => res(); s.onerror = () => { zxingP = null; rej({name: 'NoLib'}); };
-      document.head.append(s);
-    }));
+
+  // Read a barcode from a still photo: try the full image, then the middle, at a few sizes.
+  async function codeFromPhoto(file) {
+    const det = await getDetector();
+    const bmp = await createImageBitmap(file);
+    const W = bmp.width, H = bmp.height;
+    const c = document.createElement('canvas'), x = c.getContext('2d', {willReadFrequently: true});
+    const tries = [
+      {sx: 0, sy: 0, sw: W, sh: H, max: 2000},
+      {sx: W * 0.15, sy: H * 0.25, sw: W * 0.7, sh: H * 0.5, max: 2000},
+      {sx: 0, sy: 0, sw: W, sh: H, max: 1000},
+      {sx: W * 0.25, sy: H * 0.33, sw: W * 0.5, sh: H * 0.34, max: 1600},
+    ];
+    for (const t of tries) {
+      const k = Math.min(1, t.max / Math.max(t.sw, t.sh));
+      c.width = Math.round(t.sw * k); c.height = Math.round(t.sh * k);
+      x.drawImage(bmp, t.sx, t.sy, t.sw, t.sh, 0, 0, c.width, c.height);
+      const code = await detectIn(det, c);
+      if (code) return code;
+    }
+    return null;
+  }
+  async function scanPhoto(file) {
+    if (!file) return;
+    Scanner.stop(); scanUI(false);
+    showLoading('Reading the barcode…');
+    try {
+      const code = await codeFromPhoto(file);
+      if (code) return handleCode(code);
+      showTab('scan', false);
+      scanUI(false, 'No barcode found in that photo. Hold the phone 15–20 cm away so the lines are sharp, fill most of the photo with the barcode, and try again.');
+    } catch (e) {
+      showTab('scan', false);
+      scanUI(false, e && e.name === 'NoLib' ? 'The scanner needs internet the first time it loads. Connect and try again, or type the number below.' : 'That photo couldn’t be read. Try another one, or type the number below.');
+    }
   }
   function scanUI(on, msg) {
     $('#scanbox').hidden = !on;
@@ -1006,6 +1071,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   });
   document.addEventListener('change', ev => {
     if (ev.target.id === 'import-file' && ev.target.files && ev.target.files[0]) importFile(ev.target.files[0]);
+    if (ev.target.id === 'barcode-photo' && ev.target.files && ev.target.files[0]) { const f = ev.target.files[0]; ev.target.value = ''; scanPhoto(f); }
   });
   document.addEventListener('submit', ev => {
     ev.preventDefault();
