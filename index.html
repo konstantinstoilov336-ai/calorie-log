@@ -768,6 +768,16 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       <button class="btn" data-act="to-manual" data-name="${esc(name || '')}">Enter manually</button></div></div>`;
   }
 
+  // The amount you logged most recently for this product (matched by barcode, or by name if it has none).
+  function lastAmount(p) {
+    const same = e => e.per100 && num(e.g) > 0 && (p.code ? e.code === p.code : favKey(e.name) === favKey(p.name));
+    for (const d of Object.keys(S.days).sort().reverse()) {
+      const list = S.days[d];
+      for (let i = list.length - 1; i >= 0; i--) if (same(list[i])) return num(list[i].g);
+    }
+    const fav = S.profile.favorites.find(same);
+    return fav ? num(fav.g) : 0;
+  }
   function showProduct(p, grams) {
     S.product = p;
     ['scan', 'search', 'saved', 'manual'].forEach(t => $('#pane-' + t).hidden = true);
@@ -779,7 +789,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       presets.push({g: 100, label: `100 ${u}`});
     }
     if (p.pack && p.pack !== 100 && p.pack <= 3000) presets.push({g: p.pack, label: `${drink ? 'Whole bottle' : 'Whole pack'} · ${r0(p.pack)} ${u}`});
-    const g0 = grams || (drink ? (p.pack <= 3000 && p.pack) || p.serving : p.serving) || 100;
+    const last = grams ? 0 : lastAmount(p);
+    const g0 = grams || last || (drink ? (p.pack <= 3000 && p.pack) || p.serving : p.serving) || 100;
     const fav = isFav(p.name);
     const el = $('#product');
     el.hidden = false;
@@ -812,6 +823,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
             <button class="chip" data-act="unit" data-u="ml" aria-pressed="${drink}">ml</button>
           </div></div>
         <div class="chips">${presets.map(x => `<button class="chip" data-act="preset" data-g="${x.g}">${x.label}</button>`).join('')}</div>
+        ${last ? `<small>Set to the amount you had last time.</small>` : ''}
       </div>
       <p class="totals num" id="totals"></p>
       <button class="btn" data-act="add-product" id="add-product"></button>
