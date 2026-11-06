@@ -184,6 +184,11 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
 .per100 span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 .amount{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
 .amount .unit{color:var(--muted);font-weight:600}
+.thumb{position:relative;flex:none;width:40px;height:40px;border-radius:10px;background:var(--sunk);color:var(--muted);display:grid;place-items:center;font-family:var(--display);font-weight:700;font-size:16px;overflow:hidden}
+.thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#fff}
+.thumb.big{width:72px;height:72px;border-radius:14px;font-size:26px}
+.tline{display:flex;align-items:center;gap:10px;min-width:0}
+.ttext{min-width:0}
 .unit-switch{display:flex;gap:4px}
 .unit-switch .chip{padding:8px 12px;min-width:44px}
 .totals{font-size:14px;color:var(--muted)}
@@ -323,8 +328,16 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   const DEFAULT_GOAL = {kcal:2000, p:140, c:210, f:65};
   const KEY = 'calorie-log-v1';
   const OFF = 'https://world.openfoodfacts.org';
-  const FIELDS = 'code,product_name,product_name_bg,product_name_en,generic_name,brands,quantity,product_quantity,product_quantity_unit,serving_size,serving_quantity,serving_quantity_unit,categories_tags,nutriments';
+  const FIELDS = 'code,product_name,product_name_bg,product_name_en,generic_name,brands,quantity,product_quantity,product_quantity_unit,serving_size,serving_quantity,serving_quantity_unit,categories_tags,image_front_small_url,image_small_url,nutriments';
   const unitLabel = u => u === 'ml' ? 'ml' : 'g';
+  // Product photos come only from Open Food Facts' image server.
+  const safeImg = u => /^https:\/\/images\.openfoodfacts\.org\//.test(String(u || '')) ? String(u) : '';
+  // A small square photo, or the first letter when there's no photo (or it fails to load).
+  const thumb = (e, big) => {
+    const letter = (String(e.name || '?').trim()[0] || '?').toUpperCase();
+    const img = safeImg(e.img);
+    return `<span class="thumb${big ? ' big' : ''}" aria-hidden="true">${esc(letter)}${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async">` : ''}</span>`;
+  };
   // zxing-cpp compiled to WebAssembly, wrapped as a BarcodeDetector (iPhone Safari has no built-in one)
   const DETECTOR_URL = 'https://cdn.jsdelivr.net/npm/barcode-detector@2.2.8/dist/es/pure.min.js';
   const FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e'];
@@ -467,8 +480,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       <div class="meal-h"><h2>${m.name}</h2>${list.length ? `<span class="num">${fmt(t.kcal)} kcal</span>` : ''}
         <button class="add-mini" data-act="add" data-meal="${m.id}" aria-label="Add to ${m.name}">${ICON.plus}</button></div>
       ${list.length ? `<ul>${list.map(e => `<li class="entry">
-          <button class="entry-main" data-act="edit" data-id="${esc(e.id)}"><span class="en">${esc(e.name)}</span>
-            <span class="em num">${e.g ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></button>
+          <button class="entry-main tline" data-act="edit" data-id="${esc(e.id)}">${thumb(e)}<span class="ttext"><span class="en">${esc(e.name)}</span>
+            <span class="em num">${e.g ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span></button>
           <span class="ek num">${fmt(num(e.kcal))}</span>
           <button class="del" data-act="del" data-id="${esc(e.id)}" aria-label="Delete ${esc(e.name)}">${ICON.x}</button>
         </li>`).join('')}</ul>` : `<p class="none">Nothing logged</p>`}
@@ -601,7 +614,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#sheet').hidden = false;
     document.body.style.overflow = 'hidden';
     if (edit) {
-      if (edit.per100) { showTab('manual'); $('#pane-manual').hidden = true; showProduct({name: edit.name, brand: edit.brand || '', per100: edit.per100, unit: edit.u || 'g', serving: 0, pack: 0, code: edit.code || ''}, edit.g); return; }
+      if (edit.per100) { showTab('manual'); $('#pane-manual').hidden = true; showProduct({name: edit.name, brand: edit.brand || '', per100: edit.per100, unit: edit.u || 'g', serving: 0, pack: 0, code: edit.code || '', img: edit.img || ''}, edit.g); return; }
       $('#m-name').value = edit.name; $('#m-kcal').value = r0(edit.kcal);
       $('#m-p').value = r1(edit.p) || ''; $('#m-c').value = r1(edit.c) || ''; $('#m-f').value = r1(edit.f) || '';
       showTab('manual');
@@ -632,7 +645,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   }
   const foodOf = e => {
     const f = {name: e.name, kcal: r0(e.kcal), p: r1(e.p), c: r1(e.c), f: r1(e.f)};
-    if (e.per100) Object.assign(f, {per100: e.per100, g: e.g, u: e.u || 'g', brand: e.brand || '', code: e.code || ''});
+    if (e.per100) Object.assign(f, {per100: e.per100, g: e.g, u: e.u || 'g', brand: e.brand || '', code: e.code || '', img: safeImg(e.img)});
     return f;
   };
   function renderSaved() {
@@ -642,7 +655,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     S.savedRec = rec;
     const match = e => !q || String(e.name).toLowerCase().includes(q);
     const row = (e, i, src) => `<li>
-      <button class="pick" data-act="pick" data-src="${src}" data-i="${i}"><span><span class="en">${esc(e.name)}</span><span class="em num">${e.per100 ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span><span class="ek num">${fmt(num(e.kcal))}</span></button>
+      <button class="pick" data-act="pick" data-src="${src}" data-i="${i}"><span class="tline">${thumb(e)}<span class="ttext"><span class="en">${esc(e.name)}</span><span class="em num">${e.per100 ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span></span><span class="ek num">${fmt(num(e.kcal))}</span></button>
       <button class="star" data-act="fav" data-src="${src}" data-i="${i}" aria-pressed="${src === 'fav'}" aria-label="${src === 'fav' ? 'Remove from' : 'Add to'} favourites">${ICON.star}</button></li>`;
     const fh = favs.map((e, i) => match(e) ? row(e, i, 'fav') : '').join('');
     const rh = rec.map((e, i) => match(e) ? row(e, i, 'rec') : '').join('');
@@ -657,7 +670,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     const t = Date.now();
     items.forEach((it, i) => {
       const e = {id: uid(), name: String(it.name).slice(0, 140) || 'Food', kcal: r0(it.kcal), p: r1(it.p), c: r1(it.c), f: r1(it.f), meal: S.meal, t: t + i};
-      if (it.per100) Object.assign(e, {per100: it.per100, g: r1(it.g), u: it.u || 'g', brand: it.brand || '', code: it.code || ''});
+      if (it.per100) Object.assign(e, {per100: it.per100, g: r1(it.g), u: it.u || 'g', brand: it.brand || '', code: it.code || '', img: safeImg(it.img)});
       list.push(e);
     });
     setDay(S.date, list);
@@ -703,6 +716,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       brand: String(p.brands || '').split(',')[0].trim(),
       per100: has ? {kcal: r1(kcal), p: r1(n.proteins_100g), c: r1(n.carbohydrates_100g), f: r1(n.fat_100g)} : null,
       unit: unitOf(p, p.code || code),
+      img: safeImg(p.image_front_small_url || p.image_small_url),
       serving: num(p.serving_quantity), servingLabel: p.serving_size || '',
       pack: parsePack(p.quantity) || num(p.product_quantity),
     };
@@ -783,6 +797,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     el.hidden = false;
     el.innerHTML = `<div class="product">
       <div class="sheet-h" style="align-items:flex-start">
+        ${thumb(p, true)}
         <div style="min-width:0;flex:1">
           <h3 id="pname-show">${esc(p.name)}</h3>
           <form class="code-row" id="name-form" hidden>
@@ -831,7 +846,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   }
   function productItem() {
     const p = S.product, t = productTotals();
-    return {name: p.name, kcal: t.kcal, p: t.p, c: t.c, f: t.f, per100: p.per100, g: t.g, u: p.unit || 'g', brand: p.brand, code: p.code};
+    return {name: p.name, kcal: t.kcal, p: t.p, c: t.c, f: t.f, per100: p.per100, g: t.g, u: p.unit || 'g', brand: p.brand, code: p.code, img: p.img || ''};
   }
 
   // ---------- Search UI ----------
@@ -853,7 +868,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     }
     S.localHits = hits;
     box.innerHTML = hits.length ? `<h3 class="sec-h">Your foods</h3><ul class="saved">${hits.map((e, i) => `<li style="grid-template-columns:1fr">
-      <button class="pick" data-act="pick" data-src="local" data-i="${i}"><span><span class="en">${esc(e.name)}</span><span class="em num">${e.per100 ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span><span class="ek num">${fmt(num(e.kcal))}</span></button></li>`).join('')}</ul>` : '';
+      <button class="pick" data-act="pick" data-src="local" data-i="${i}"><span class="tline">${thumb(e)}<span class="ttext"><span class="en">${esc(e.name)}</span><span class="em num">${e.per100 ? `${r0(e.g)} ${unitLabel(e.u)} · ` : ''}P ${r0(e.p)} · C ${r0(e.c)} · F ${r0(e.f)}</span></span></span><span class="ek num">${fmt(num(e.kcal))}</span></button></li>`).join('')}</ul>` : '';
   }
 
   function renderResults(q, res, loading) {
@@ -862,7 +877,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     if (!res) { out.innerHTML = head + `<p class="muted">Searching for “${esc(q)}”…</p>`; return; }
     S.results = res;
     out.innerHTML = head + (res.length ? `<ul class="results">${res.map((p, i) => `<li><button data-act="result" data-i="${i}">
-        <span style="min-width:0"><span class="en">${esc(p.name)}</span><span class="em">${esc([p.brand, p.servingLabel || ''].filter(Boolean).join(' · '))}</span></span>
+        <span class="tline">${thumb(p)}<span class="ttext"><span class="en">${esc(p.name)}</span><span class="em">${esc([p.brand, p.servingLabel || ''].filter(Boolean).join(' · '))}</span></span></span>
         <span class="ek num">${fmt(p.per100.kcal)}<span class="em" style="display:inline"> /100 ${unitLabel(p.unit)}</span></span></button></li>`).join('')}</ul>`
       : `<p class="muted">No products with nutrition data for “${esc(q)}”. Try the brand name, or use Manual.</p>`);
   }
@@ -1165,7 +1180,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (a === 'add-product') {
       const item = productItem(); if (!item.g) return;
       if (S.editId) {
-        const list = (S.days[S.date] || []).map(e => e.id === S.editId ? {...e, name: item.name, kcal: r0(item.kcal), p: r1(item.p), c: r1(item.c), f: r1(item.f), g: r1(item.g), u: item.u, per100: item.per100, meal: S.meal} : e);
+        const list = (S.days[S.date] || []).map(e => e.id === S.editId ? {...e, name: item.name, kcal: r0(item.kcal), p: r1(item.p), c: r1(item.c), f: r1(item.f), g: r1(item.g), u: item.u, per100: item.per100, img: item.img || e.img || '', meal: S.meal} : e);
         setDay(S.date, list); toast('Entry updated');
       } else addEntries([item]);
       closeSheet();
@@ -1183,7 +1198,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (a === 'pick') {
       const src = t.dataset.src === 'fav' ? S.profile.favorites : t.dataset.src === 'local' ? (S.localHits || []) : S.savedRec;
       const e = src[+t.dataset.i]; if (!e) return;
-      if (e.per100) { showProduct({name: e.name, brand: e.brand || '', per100: e.per100, unit: e.u || 'g', serving: 0, pack: 0, code: e.code || ''}, e.g); return; }
+      if (e.per100) { showProduct({name: e.name, brand: e.brand || '', per100: e.per100, unit: e.u || 'g', serving: 0, pack: 0, code: e.code || '', img: e.img || ''}, e.g); return; }
       addEntries([e]); closeSheet();
     }
     else if (a === 'fav') {
@@ -1298,7 +1313,31 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     persist();
     if ($('#sheet').hidden) render();
   }
-  setTimeout(fixOldUnits, 1500);
+  // One-time: give items logged before photos existed their product photo (looked up by barcode).
+  // An item gets img '' when the database has no photo, so it isn't looked up again.
+  async function addOldPhotos() {
+    const all = [...Object.values(S.days).flat(), ...S.profile.favorites];
+    const codes = [...new Set(all.filter(e => e.per100 && e.code && !('img' in e)).map(e => e.code))].slice(0, 40);
+    if (!codes.length || !navigator.onLine) return;
+    const imgs = {};
+    for (const code of codes) {
+      try { const p = await lookupCode(code); imgs[code] = p ? p.img : ''; } catch { return; }
+    }
+    const fix = e => (e.per100 && e.code in imgs && !('img' in e)) ? {...e, img: imgs[e.code]} : e;
+    const days = {};
+    for (const [d, list] of Object.entries(S.days)) days[d] = list.map(fix);
+    S.days = days;
+    S.profile = {...S.profile, favorites: S.profile.favorites.map(fix)};
+    persist();
+    if ($('#sheet').hidden) render();
+  }
+  setTimeout(() => fixOldUnits().finally(addOldPhotos), 1500);
+
+  // A photo that fails to load is removed, so the letter behind it shows instead.
+  document.addEventListener('error', ev => {
+    const t = ev.target;
+    if (t && t.tagName === 'IMG' && t.parentElement && t.parentElement.classList.contains('thumb')) t.remove();
+  }, true);
 })();
 </script>
 </body>
