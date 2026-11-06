@@ -169,6 +169,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
 .scanbox .scan-msg{position:absolute;left:0;right:0;bottom:10px;text-align:center;color:#fff;font-size:13px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.6)}
 .scan-off{display:grid;place-items:center;text-align:center;gap:10px;padding:24px;border:1.5px dashed var(--line);border-radius:16px}
 .code-row{display:grid;grid-template-columns:1fr auto;gap:8px}
+#pane-scan.prefer-photo .photo-scan{order:-1}
+#scan-hint{text-align:center}
 .photo-scan{display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;position:relative}
 .photo-scan svg{width:20px;height:20px}
 .photo-scan input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
@@ -182,6 +184,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
 .per100 span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 .amount{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
 .amount .unit{color:var(--muted);font-weight:600}
+.unit-switch{display:flex;gap:4px}
+.unit-switch .chip{padding:8px 12px;min-width:44px}
 .totals{font-size:14px;color:var(--muted)}
 .totals b{color:var(--fg)}
 .results{list-style:none;margin:0;padding:0}
@@ -252,8 +256,9 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       </div>
       <div class="scan-off" id="scan-off">
         <p class="muted" id="scan-off-msg">Point the camera at the barcode on the package.</p>
-        <button class="btn" data-act="scan-start">Start camera</button>
+        <button class="btn" id="scan-start" data-act="scan-start">Start camera</button>
       </div>
+      <p class="muted" id="scan-hint">The live camera needs your permission each time the app opens. “Take a photo” uses the iPhone camera and never asks.</p>
       <label class="btn ghost photo-scan" for="barcode-photo">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
         Take a photo of the barcode
@@ -317,7 +322,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   const DEFAULT_GOAL = {kcal:2000, p:140, c:210, f:65};
   const KEY = 'calorie-log-v1';
   const OFF = 'https://world.openfoodfacts.org';
-  const FIELDS = 'code,product_name,product_name_bg,product_name_en,generic_name,brands,quantity,product_quantity,product_quantity_unit,serving_size,serving_quantity,serving_quantity_unit,nutriments';
+  const FIELDS = 'code,product_name,product_name_bg,product_name_en,generic_name,brands,quantity,product_quantity,product_quantity_unit,serving_size,serving_quantity,serving_quantity_unit,categories_tags,nutriments';
   const unitLabel = u => u === 'ml' ? 'ml' : 'g';
   // zxing-cpp compiled to WebAssembly, wrapped as a BarcodeDetector (iPhone Safari has no built-in one)
   const DETECTOR_URL = 'https://cdn.jsdelivr.net/npm/barcode-detector@2.2.8/dist/es/pure.min.js';
@@ -347,6 +352,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     return {
       goal: {kcal: num(g.kcal) || DEFAULT_GOAL.kcal, p: num(g.p) || DEFAULT_GOAL.p, c: num(g.c) || DEFAULT_GOAL.c, f: num(g.f) || DEFAULT_GOAL.f},
       favorites: Array.isArray(p && p.favorites) ? p.favorites.filter(x => x && x.name) : [],
+      units: (p && p.units && typeof p.units === 'object') ? p.units : {},  // barcode -> 'g' | 'ml', set with the g/ml switch
     };
   }
   function normDays(d) {
@@ -577,8 +583,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#product').hidden = true;
     if (tab !== 'scan') Scanner.stop(), scanUI(false);
     if (tab === 'saved') renderSaved();
-    if (tab === 'scan') getDetector().catch(() => {});
-    if (tab === 'scan' && Scanner.everStarted && autostart) startScan();
+    if (tab === 'scan') { getDetector().catch(() => {}); applyScanPref(); }
+    if (tab === 'scan' && Scanner.everStarted && autostart && pref.get('cl-scan-method', 'live') !== 'photo') startScan();
   }
   function openSheet({meal, edit} = {}) {
     S.editId = edit ? edit.id : null;
@@ -664,11 +670,22 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     return u === 'kg' || u === 'l' ? v * 1000 : u === 'cl' ? v * 10 : v;
   }
   // Drinks are measured in ml, everything else in g. Open Food Facts gives the unit; fall back to the package text.
-  function unitOf(p) {
+  // Order of trust: your own choice for this barcode, the size printed on the package,
+  // the beverages category (many drinks have no size or a wrong unit), then the unit fields.
+  function unitOf(p, code) {
+    const saved = (S.profile.units || {})[code || p.code];
+    if (saved === 'ml' || saved === 'g') return saved;
+    const qty = String(p.quantity || '');
+    if (/\d\s*(ml|cl|l)\b/i.test(qty)) return 'ml';
+    if (/\d\s*(kg|g)\b/i.test(qty)) return 'g';
+    const cats = Array.isArray(p.categories_tags) ? p.categories_tags : [];
+    const drink = cats.includes('en:beverages') &&
+      !cats.some(c => /dehydrated|powder|instant|capsule|pods|beans|ground-coffee|tea-bags|freeze-dried/.test(c));
+    if (drink) return 'ml';
     const u = String(p.product_quantity_unit || p.serving_quantity_unit || '').toLowerCase();
     if (u === 'ml' || u === 'cl' || u === 'l') return 'ml';
-    if (u === 'g' || u === 'kg' || u === 'mg') return 'g';
-    return /\d\s*(ml|cl|l)\b/i.test(String(p.quantity || '') + ' ' + String(p.serving_size || '')) ? 'ml' : 'g';
+    if (/\d\s*(ml|cl|l)\b/i.test(String(p.serving_size || ''))) return 'ml';
+    return 'g';
   }
   function toProduct(p, code) {
     const n = p.nutriments || {};
@@ -681,7 +698,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
       name: (p.product_name || p.product_name_bg || p.product_name_en || p.generic_name || '').trim() || 'Unnamed product',
       brand: String(p.brands || '').split(',')[0].trim(),
       per100: has ? {kcal: r1(kcal), p: r1(n.proteins_100g), c: r1(n.carbohydrates_100g), f: r1(n.fat_100g)} : null,
-      unit: unitOf(p),
+      unit: unitOf(p, p.code || code),
       serving: num(p.serving_quantity), servingLabel: p.serving_size || '',
       pack: parsePack(p.quantity) || num(p.product_quantity),
     };
@@ -771,7 +788,11 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
         <div><b>${r1(p.per100.f)}</b><span>Fat g</span></div>
       </div></div>
       <div class="field"><label for="grams">${drink ? 'How much did you drink?' : 'How much did you eat?'}</label>
-        <div class="amount"><input class="inp num" id="grams" type="number" inputmode="decimal" min="0" step="any" value="${r1(g0)}"><span class="unit">${drink ? 'ml' : 'grams'}</span></div>
+        <div class="amount"><input class="inp num" id="grams" type="number" inputmode="decimal" min="0" step="any" value="${r1(g0)}">
+          <div class="unit-switch" role="group" aria-label="Unit">
+            <button class="chip" data-act="unit" data-u="g" aria-pressed="${!drink}">g</button>
+            <button class="chip" data-act="unit" data-u="ml" aria-pressed="${drink}">ml</button>
+          </div></div>
         <div class="chips">${presets.map(x => `<button class="chip" data-act="preset" data-g="${x.g}">${x.label}</button>`).join('')}</div>
       </div>
       <p class="totals num" id="totals"></p>
@@ -838,15 +859,20 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     catch { return null; }
   }
 
+  // The camera stays on for a short while after a scan, so scanning several items in a row
+  // doesn't make the iPhone ask for permission again. It is released when the app goes to the background.
+  const KEEP_CAMERA_MS = 90000;
   const Scanner = {
-    stream: null, timer: null, active: false, everStarted: false, canvas: null,
+    stream: null, timer: null, releaseTimer: null, active: false, everStarted: false, canvas: null,
+    live() { return this.stream && this.stream.getVideoTracks().some(t => t.readyState === 'live'); },
     async start(video, onCode, onError) {
       this.stop(); this.active = true; this.everStarted = true;
+      clearTimeout(this.releaseTimer);
       const done = code => { if (!this.active) return; this.active = false; onCode(code); };
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { onError({name: 'NoCamera'}); return; }
       let det;
       try {
-        const [d, stream] = await Promise.all([getDetector(), navigator.mediaDevices.getUserMedia({audio: false, video: {
+        const [d, stream] = await Promise.all([getDetector(), this.live() ? this.stream : navigator.mediaDevices.getUserMedia({audio: false, video: {
           facingMode: {ideal: 'environment'}, width: {ideal: 1920}, height: {ideal: 1080},
           advanced: [{focusMode: 'continuous'}],
         }})]);
@@ -881,8 +907,13 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     },
     stop() {
       this.active = false; clearTimeout(this.timer);
-      if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
       const v = $('#video'); if (v) { try { v.pause(); } catch {} v.srcObject = null; }
+      clearTimeout(this.releaseTimer);
+      if (this.stream) this.releaseTimer = setTimeout(() => this.release(), KEEP_CAMERA_MS);
+    },
+    release() {
+      clearTimeout(this.releaseTimer);
+      if (this.stream) { this.stream.getTracks().forEach(t => t.stop()); this.stream = null; }
     },
   };
 
@@ -909,6 +940,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   }
   async function scanPhoto(file) {
     if (!file) return;
+    pref.set('cl-scan-method', 'photo');
     Scanner.stop(); scanUI(false);
     showLoading('Reading the barcode…');
     try {
@@ -926,7 +958,16 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#scan-off').hidden = on;
     if (msg) $('#scan-off-msg').textContent = msg;
   }
+  // Whichever scan method you used last becomes the main button.
+  function applyScanPref() {
+    const photo = pref.get('cl-scan-method', 'live') === 'photo';
+    $('#pane-scan').classList.toggle('prefer-photo', photo);
+    document.querySelector('.photo-scan').classList.toggle('ghost', !photo);
+    $('#scan-start').classList.toggle('ghost', photo);
+    $('#scan-start').textContent = photo ? 'Use live camera instead' : 'Start camera';
+  }
   function startScan() {
+    pref.set('cl-scan-method', 'live'); applyScanPref();
     scanUI(true);
     Scanner.start($('#video'), code => { if (navigator.vibrate) navigator.vibrate(60); handleCode(code); }, e => {
       const n = e && e.name;
@@ -1035,6 +1076,22 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (a === 'to-manual') { const n = t.dataset.name; showTab('manual'); if (n) $('#m-name').value = n; $('#m-kcal').focus(); }
     else if (a === 'result') { const p = S.results && S.results[+t.dataset.i]; if (p) showProduct(p); }
     else if (a === 'preset') { $('#grams').value = r1(t.dataset.g); updateTotals(); }
+    else if (a === 'unit') {
+      const p = S.product; if (!p || p.unit === t.dataset.u) return;
+      const amount = num($('#grams').value);
+      p.unit = t.dataset.u;
+      if (p.code) setProfile({...S.profile, units: {...S.profile.units, [p.code]: p.unit}});
+      // Fix this product everywhere it was logged or saved before.
+      if (p.code) {
+        const fix = e => e.code === p.code && e.per100 ? {...e, u: p.unit} : e;
+        const days = {};
+        for (const [d, list] of Object.entries(S.days)) days[d] = list.map(fix);
+        S.days = days;
+        S.profile = {...S.profile, favorites: S.profile.favorites.map(fix)};
+        persist(); render();
+      }
+      showProduct(p, amount);
+    }
     else if (a === 'add-product') {
       const item = productItem(); if (!item.g) return;
       if (S.editId) {
@@ -1115,7 +1172,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (!$('#sheet').hidden) closeSheet();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { if (Scanner.active) { Scanner.stop(); scanUI(false, 'Camera paused. Tap Start camera to scan again.'); } }
+    if (document.hidden) { if (Scanner.active) { Scanner.stop(); scanUI(false, 'Camera paused. Tap Start camera to scan again.'); } Scanner.release(); }
     else if (S.date !== today() && S.lastToday !== today()) { S.date = today(); S.lastToday = today(); render(); }
   });
 
@@ -1132,14 +1189,20 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
   // One-time repair: products logged before units were tracked were all shown in grams.
   // Look each one up again (by barcode) and mark drinks as ml.
   async function fixOldUnits() {
+    // v2 re-checks items marked "g" too, because drinks without a listed size were wrongly kept in grams.
+    const redo = !pref.get('cl-units-v2', false);
+    const chosen = S.profile.units || {};
+    const needs = e => e.per100 && e.code && !chosen[e.code] && (!e.u || (redo && e.u === 'g'));
     const all = [...Object.values(S.days).flat(), ...S.profile.favorites];
-    const codes = [...new Set(all.filter(e => e.per100 && !e.u && e.code).map(e => e.code))].slice(0, 40);
-    if (!codes.length || !navigator.onLine) return;
+    const codes = [...new Set(all.filter(needs).map(e => e.code))].slice(0, 40);
+    if (!navigator.onLine) return;
+    if (!codes.length) { pref.set('cl-units-v2', true); return; }
     const units = {};
     for (const code of codes) {
       try { const p = await lookupCode(code); if (p) units[code] = p.unit; } catch { return; }
     }
-    const fix = e => (e.per100 && !e.u && units[e.code]) ? {...e, u: units[e.code]} : e;
+    pref.set('cl-units-v2', true);
+    const fix = e => (needs(e) && units[e.code]) ? {...e, u: units[e.code]} : e;
     const days = {};
     for (const [d, list] of Object.entries(S.days)) days[d] = list.map(fix);
     S.days = days;
