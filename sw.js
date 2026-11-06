@@ -1,6 +1,6 @@
 // Calorie Log service worker: makes the app open offline.
 // Bump VERSION whenever you upload changed files so phones pick up the update.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const SHELL_FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
@@ -38,8 +38,8 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Fonts and the barcode library: cache first.
-  if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname) || url.hostname === 'unpkg.com') {
+  // Fonts and the barcode scanner (script + WebAssembly): cache first.
+  if (/fonts\.(googleapis|gstatic)\.com$/.test(url.hostname) || /(^|\.)jsdelivr\.net$/.test(url.hostname)) {
     e.respondWith(
       caches.open(RUNTIME).then(c => c.match(req).then(hit => hit || fetch(req).then(res => {
         if (res.ok || res.type === 'opaque') c.put(req, res.clone());
