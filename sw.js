@@ -1,6 +1,6 @@
 // Calorie Log service worker: makes the app open offline.
 // Bump VERSION whenever you upload changed files so phones pick up the update.
-const VERSION = 'v4';
+const VERSION = 'v5';
 const SHELL = `shell-${VERSION}`;
 const RUNTIME = 'runtime-v1';
 const SHELL_FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];

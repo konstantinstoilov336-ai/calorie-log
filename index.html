@@ -287,13 +287,27 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     </section>
 
     <form id="pane-manual" class="form" hidden>
-      <div class="field"><label for="m-name">Food</label><input class="inp" id="m-name" required placeholder="Greek yogurt, 200 g" autocomplete="off"></div>
+      <div class="field"><label for="m-name">Food</label><input class="inp" id="m-name" required placeholder="Greek yogurt" autocomplete="off"></div>
+      <div class="field"><label for="m-g">Amount eaten (optional)</label>
+        <div class="amount"><input class="inp num" id="m-g" type="number" inputmode="decimal" min="0" step="any" placeholder="e.g. 150">
+          <div class="unit-switch" role="group" aria-label="Unit">
+            <button type="button" class="chip" data-act="m-unit" data-u="g" aria-pressed="true">g</button>
+            <button type="button" class="chip" data-act="m-unit" data-u="ml" aria-pressed="false">ml</button>
+          </div></div>
+      </div>
+      <div class="field" id="m-mode-f" hidden><label>The numbers below are</label>
+        <div class="chips" role="group" aria-label="Values are">
+          <button type="button" class="chip" data-act="m-mode" data-m="100" aria-pressed="true" id="m-mode-100">Per 100 g (from the label)</button>
+          <button type="button" class="chip" data-act="m-mode" data-m="total" aria-pressed="false">Total for this amount</button>
+        </div>
+      </div>
       <div class="field"><label for="m-kcal">Calories (kcal)</label><input class="inp num" id="m-kcal" type="number" inputmode="decimal" min="0" step="any" required placeholder="0"></div>
       <div class="grid3">
         <div class="field"><label for="m-p">Protein g</label><input class="inp num" id="m-p" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div>
         <div class="field"><label for="m-c">Carbs g</label><input class="inp num" id="m-c" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div>
         <div class="field"><label for="m-f">Fat g</label><input class="inp num" id="m-f" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div>
       </div>
+      <p class="totals num" id="m-totals" hidden></p>
       <button class="btn" type="submit" id="m-submit">Add</button>
     </form>
 
@@ -600,6 +614,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     $('#seg').hidden = !!edit;
     $('#m-submit').textContent = edit ? 'Save changes' : 'Add';
     $('#pane-manual').reset();
+    S.mUnit = 'g'; S.mMode = '100'; updateManual();
     $('#sheet').hidden = false;
     document.body.style.overflow = 'hidden';
     if (edit) {
@@ -842,6 +857,26 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     const b = $('#add-product');
     b.disabled = !t.g;
     b.textContent = S.editId ? 'Save changes' : `Add · ${fmt(t.kcal)} kcal`;
+  }
+  // Manual entry: optional amount; values are either per 100 g/ml or the total for that amount.
+  function manualCalc() {
+    const g = num($('#m-g').value), v = {kcal: num($('#m-kcal').value), p: num($('#m-p').value), c: num($('#m-c').value), f: num($('#m-f').value)};
+    if (!(g > 0)) return {g: 0, ...v};
+    const per100 = S.mMode === 'total' ? {kcal: v.kcal * 100 / g, p: v.p * 100 / g, c: v.c * 100 / g, f: v.f * 100 / g} : v;
+    const k = g / 100;
+    return {g, per100: {kcal: r1(per100.kcal), p: r1(per100.p), c: r1(per100.c), f: r1(per100.f)},
+      kcal: per100.kcal * k, p: per100.p * k, c: per100.c * k, f: per100.f * k};
+  }
+  function updateManual() {
+    const u = S.mUnit || 'g';
+    document.querySelectorAll('[data-act="m-unit"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.u === u)));
+    document.querySelectorAll('[data-act="m-mode"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.m === S.mMode)));
+    $('#m-mode-100').textContent = `Per 100 ${u} (from the label)`;
+    const t = manualCalc(), on = t.g > 0;
+    $('#m-mode-f').hidden = !on;
+    const tot = $('#m-totals');
+    tot.hidden = !(on && S.mMode === '100');
+    if (!tot.hidden) tot.innerHTML = `${r1(t.g)} ${u}: <b>${fmt(t.kcal)} kcal</b> · P ${r0(t.p)} g · C ${r0(t.c)} g · F ${r0(t.f)} g`;
   }
   function productItem() {
     const p = S.product, t = productTotals();
@@ -1154,6 +1189,8 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (a === 'back-saved') { showTab('saved'); }
     else if (a === 'to-manual') { const n = t.dataset.name; showTab('manual'); if (n) $('#m-name').value = n; $('#m-kcal').focus(); }
     else if (a === 'result') { const p = S.results && S.results[+t.dataset.i]; if (p) showProduct(p); }
+    else if (a === 'm-unit') { S.mUnit = t.dataset.u; updateManual(); }
+    else if (a === 'm-mode') { S.mMode = t.dataset.m; updateManual(); }
     else if (a === 'preset') { $('#grams').value = r1(t.dataset.g); updateTotals(); }
     else if (a === 'edit-name') {
       const f = $('#name-form'); if (!f) return;
@@ -1219,6 +1256,7 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
 
   document.addEventListener('input', ev => {
     if (ev.target.id === 'grams') updateTotals();
+    if (ev.target.closest('#pane-manual')) updateManual();
     if (ev.target.closest('#goals-form')) updateCheck();
     if (ev.target.id === 'saved-q') renderSaved();
     if (ev.target.id === 'q') onSearchInput();
@@ -1252,7 +1290,12 @@ h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;font-weight:700}
     else if (id === 'pane-manual') {
       const item = {name: $('#m-name').value.trim(), kcal: $('#m-kcal').value, p: $('#m-p').value, c: $('#m-c').value, f: $('#m-f').value};
       if (!item.name) return;
-      if (S.editId) {
+      const mc = manualCalc();
+      if (mc.g > 0) Object.assign(item, {kcal: mc.kcal, p: mc.p, c: mc.c, f: mc.f, per100: mc.per100, g: mc.g, u: S.mUnit || 'g'});
+      if (S.editId && item.per100) {
+        const list = (S.days[S.date] || []).map(e => e.id !== S.editId ? e : {...e, name: item.name, kcal: r0(item.kcal), p: r1(item.p), c: r1(item.c), f: r1(item.f), per100: item.per100, g: r1(item.g), u: item.u, meal: S.meal});
+        setDay(S.date, list); toast('Entry updated');
+      } else if (S.editId) {
         const list = (S.days[S.date] || []).map(e => {
           if (e.id !== S.editId) return e;
           const {per100, g, u, ...rest} = e;
